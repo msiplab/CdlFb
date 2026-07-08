@@ -5,7 +5,7 @@
 %[text] `電子情報通学会　基礎・境界ソサイエティ　Fundamentals Review` 
 %[text] [`https://www.jstage.jst.go.jp/article/essfr/17/2/17_116/_article/-char/ja`](https://www.jstage.jst.go.jp/article/essfr/17/2/17_116/_article/-char/ja)
 %[text] 
-%[text] `動作環境：MATLAB R2024b`
+%[text] `動作環境：MATLAB R2025a以降（テキスト形式Live Script、R2026aで動作確認）`
 %%
 %[text] ### 準備
 clear 
@@ -969,7 +969,7 @@ for iLayer = 1:nLayers
     end
 end
 end
-%[text] © Copyright, 2023-2025, Shogo MURAMATSU, All rights reserved.
+%[text] © Copyright, 2023-2026, Shogo MURAMATSU, All rights reserved.
 
 %[appendix]{"version":"1.0"}
 %---
@@ -983,5 +983,5 @@ end
 %   data: {"defaultValue":true,"label":"noDcLeakage","run":"Section"}
 %---
 %[output:5beb9c5c]
-%   data: {"dataType":"text","outputData":{"text":"SaivDr-4.2.2.4 exits.\nSkip code generation\n","truncated":false}}
+%   data: {"dataType":"text","outputData":{"text":"SaivDr-4.2.2.5 exits.\nSkip code generation\n","truncated":false}}
 %---
