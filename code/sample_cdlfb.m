@@ -627,17 +627,31 @@ dlu = dlarray(u,'SSCB');
 dlv = synthesisnet.predict(s{1:nLevels+1});
 assert(mse(extractdata(dlv),u)<1e-9)
 %[text] #### NSOLTによる合成処理とその随伴処理の定義
+%[text] レベルごとに単一段（1レベル分）の要素画像（等価FIRフィルタ）を学習済みネットワークから抽出し、レベルの深さ分だけ`dlconv`/`dltranspconv`を再帰的に適用する階層的（カスケード）方式で高速化する。全レベルの係数を単一の畳み込みに平坦化する方式は各レベルの解像度差（decFactor^level）を無視してしまい多レベルでは完全再構成を満たせないため、必ずレベルごとに畳み込みを重ねる。
+import saivdr.dcnn.*
+maxDecFactor1 = decFactor; % 単一レベル分の等価フィルタ長を計算（nLevels=1相当）
+szFilters1 = maxDecFactor1 + ppOrder.*decFactor.*(maxDecFactor1-1)./(decFactor-1);
+protolgraph = fcn_creatensoltlgraph2d([],...
+    'InputSize',szFilters1,...
+    'NumberOfChannels',nChannels,...
+    'DecimationFactor',decFactor,...
+    'PolyPhaseOrder',ppOrder,...
+    'NumberOfLevels',1,...
+    'NumberOfVanishingMoments',noDcLeakage,...
+    'Mode','Synthesizer');
+protonetTemplate = dlnetwork(protolgraph);
 nsoltconfig.nLevels = nLevels;
-szCoefs = zeros(nLevels+1,3);
-for iLevel = 1:nLevels+1
-    s_iLevel = s{iLevel};
-    szCoefs(iLevel,1) = size(s_iLevel,1);
-    szCoefs(iLevel,2) = size(s_iLevel,2);
-    szCoefs(iLevel,3) = size(s_iLevel,3);
+nsoltconfig.nChsPerLv = sum(nChannels);
+nsoltconfig.decFactor = decFactor;
+nsoltconfig.szOrg = szOrg;
+nsoltconfig.padSz = (szFilters1 - decFactor)/2;
+nsoltconfig.W = cell(1,nLevels);
+for iLv = 1:nLevels
+    protoLv = cplevelangles(synthesisnet,protonetTemplate,iLv);
+    nsoltconfig.W{iLv} = single(getatomicimages(protoLv,szFilters1,1));
 end
-nsoltconfig.szCoefs = szCoefs;
-syn_nsolt = @(x) synthesisnsolt(x,synthesisnet,nsoltconfig);
-adj_nsolt = @(y) analysisnsolt(y,analysisnet,nsoltconfig);
+syn_nsolt = @(x) synthesisnsolt(x,nsoltconfig);
+adj_nsolt = @(y) analysisnsolt(y,nsoltconfig);
 %[text] #### 随伴関係の確認
 x = adj_nsolt(y);
 v = randn(size(x));
@@ -777,39 +791,174 @@ for idx = 1:nDics
 end
 %%
 %[text] ## 【関数定義】
-%[text] #### NSOLT合成処理関数
-function y = synthesisnsolt(x,synthesisnet,config)
-nLevels = config.nLevels;
-szCoefs = config.szCoefs;
-s = cell(1,nLevels+1);
-sidx = 1;
-for iLevel = 1:nLevels+1
-    sz_iLevel = szCoefs(iLevel,:);
-    eidx = sidx+prod(sz_iLevel)-1;
-    x_iLevel = x(sidx:eidx);
-    s{iLevel} = dlarray(reshape(x_iLevel,sz_iLevel),'SSCB');
-    sidx = eidx+1;
+%[text] #### レベルiLvの学習済み回転角を単一レベルのひな型ネットワークにコピー
+function protoLv = cplevelangles(fullnet,protoTemplate,iLv)
+% レベル毎に独立な回転角(Angles)を持つ多レベル網から、レベルiLv分の値だけを
+% 単一レベル(nLevels=1)のひな型ネットワークにコピーする。
+protoLv = protoTemplate;
+prefixFrom = sprintf('Lv%d_',iLv);
+for i = 1:height(fullnet.Learnables)
+    name = fullnet.Learnables.Layer(i);
+    if startsWith(name,prefixFrom)
+        newname = "Lv1_"+extractAfter(name,prefixFrom);
+        j = find(protoLv.Learnables.Layer==newname & ...
+            protoLv.Learnables.Parameter==fullnet.Learnables.Parameter(i));
+        if ~isempty(j)
+            protoLv.Learnables.Value(j) = fullnet.Learnables.Value(i);
+        end
+    end
 end
-dly = synthesisnet.predict(s{1:nLevels+1});
-y = extractdata(dly);
+end
+%[text] #### 単一レベル分の要素画像(atomic images)の抽出
+function [atomicImages, mRows, mCols] = getatomicimages(synthesisnet, patchsize, scale)
+% GETATOMICIMAGES 学習済みNSOLT合成網（単一レベル）から要素画像を計算する
+% 各要素インパルス入力に対する合成網の応答を求めることで、単一レベル分の
+% ラティス構造と等価な多チャネルFIRフィルタ（畳み込みカーネル）を構築する。
+import saivdr.dcnn.*
+if nargin < 3 || isempty(scale)
+    scale = 1;
+end
+expfinallayer = '^Lv1_Cmp1+_V0~?$';
+expidctlayer = '^Lv\d+_E0~?$';
+nLayers = height(synthesisnet.Layers);
+nLevels = 0;
+nComponents = 1;
+for iLayer = 1:nLayers
+    layer = synthesisnet.Layers(iLayer);
+    if ~isempty(regexp(layer.Name,expfinallayer,'once'))
+        nChannels = layer.NumberOfChannels;
+        decFactor = layer.DecimationFactor;
+    end
+    if ~isempty(regexp(layer.Name,expidctlayer,'once'))
+        nLevels = nLevels + 1;
+        if nLevels == 1
+            nComponents = layer.NumInputs;
+        end
+    end
+end
+nChsPerLv = sum(nChannels);
+nChsTotal = nLevels*(nChsPerLv-1)+1;
+DIMENSION = 2;
+MARGIN = 2;
+if nargin < 2 || isempty(patchsize)
+    estPpOrder = floor([1 1]*sqrt(nLayers/(DIMENSION*nLevels)));
+    estKernelExt = decFactor.*(estPpOrder+1);
+    for iLv = 2:nLevels
+        estKernelExt = (estKernelExt-1).*(decFactor+1)+1;
+    end
+    maxDecFactor = decFactor.^nLevels;
+    patchsize = (ceil(estKernelExt./maxDecFactor)+MARGIN).*maxDecFactor;
+end
+atomicImages = zeros([patchsize 1 nChsTotal],'single');
+dls = cell(nLevels+1,1);
+for iRevLv = nLevels:-1:1
+    if iRevLv == nLevels
+        dls{nLevels+1} = dlarray(zeros([patchsize./(decFactor.^nLevels) nComponents],'single'),'SSC');
+        dls{nLevels} = dlarray(zeros([patchsize./(decFactor.^nLevels) nComponents*(nChsPerLv-1)],'single'),'SSC');
+    else
+        dls{iRevLv} = dlarray(zeros([patchsize./(decFactor.^iRevLv) nComponents*(nChsPerLv-1)],'single'),'SSC');
+    end
+end
+idx = 1;
+dld = dls;
+dld{nLevels+1}(round(end/2),round(end/2),1:nComponents) = ones(1,1,nComponents);
+atomicImages(:,:,1:nComponents,idx) = extractdata(synthesisnet.predict(dld{:}));
+idx = idx+1;
+for iRevLv = nLevels:-1:1
+    for iAtom = 1:nChsPerLv-1
+        dld = dls;
+        for iCmp = 1:nComponents
+            dld{iRevLv}(round(end/2),round(end/2),(iCmp-1)*(nChsPerLv-1)+iAtom) = 1;
+        end
+        atomicImages(:,:,1:nComponents,idx) = extractdata(synthesisnet.predict(dld{:}));
+        idx = idx+1;
+    end
+end
+atomicImages = scale * atomicImages;
+mRows = 2^(nextpow2(sqrt(nChsTotal))-1);
+mCols = ceil(nChsTotal/mRows);
+end
+%[text] #### 単一レベル分の合成畳み込み（転置畳み込み＋周期折返し）
+function y = synthesisnsolt_conv(x, W_syn, decFactor, padSz, szSub)
+x = cast(x,'like',W_syn);
+x_3d = reshape(x, szSub);
+x_dl = dlarray(x_3d, 'SSC');
+bias_s = zeros(1,'like',W_syn);
+y_full_dl = dltranspconv(x_dl, W_syn, bias_s, 'Stride', decFactor, 'Cropping', 0);
+y_full = extractdata(y_full_dl); % [H_full W_full 1]
+% 周期折返し（NSOLTの周期境界条件を再現）
+p_H = padSz(1); p_W = padSz(2);
+N_H = (szSub(1)-1)*decFactor(1) + size(W_syn,1) - 2*p_H;
+N_W = (szSub(2)-1)*decFactor(2) + size(W_syn,2) - 2*p_W;
+y = y_full(p_H+1:p_H+N_H, p_W+1:p_W+N_W, 1);
+y(end-p_H+1:end,:) = y(end-p_H+1:end,:) + y_full(1:p_H, p_W+1:p_W+N_W, 1);
+y(1:p_H,:)         = y(1:p_H,:)         + y_full(p_H+N_H+1:end, p_W+1:p_W+N_W, 1);
+y(:,end-p_W+1:end) = y(:,end-p_W+1:end) + y_full(p_H+1:p_H+N_H, 1:p_W, 1);
+y(:,1:p_W)         = y(:,1:p_W)         + y_full(p_H+1:p_H+N_H, p_W+N_W+1:end, 1);
+y(end-p_H+1:end,end-p_W+1:end) = y(end-p_H+1:end,end-p_W+1:end) + y_full(1:p_H, 1:p_W, 1);
+y(end-p_H+1:end,1:p_W)         = y(end-p_H+1:end,1:p_W)         + y_full(1:p_H, p_W+N_W+1:end, 1);
+y(1:p_H,end-p_W+1:end)         = y(1:p_H,end-p_W+1:end)         + y_full(p_H+N_H+1:end, 1:p_W, 1);
+y(1:p_H,1:p_W)                 = y(1:p_H,1:p_W)                 + y_full(p_H+N_H+1:end, p_W+N_W+1:end, 1);
+end
+%[text] #### 単一レベル分の分析畳み込み（周期拡張＋畳み込み）
+function x = analysisnsolt_conv(y, W_syn, decFactor, padSz)
+y = cast(y,'like',W_syn);
+if ismatrix(y); y = reshape(y,[size(y,1) size(y,2) 1]); end
+p_H = padSz(1); p_W = padSz(2);
+y_pad = padarray(y, [p_H p_W 0], 'circular', 'both'); % 周期拡張
+y_dl = dlarray(y_pad, 'SSC');
+bias_a = zeros(size(W_syn,4),1,'like',W_syn);
+x_dl = dlconv(y_dl, W_syn, bias_a, 'Stride', decFactor, 'Padding', 0);
+x = extractdata(x_dl);
+x = x(:);
+end
+%[text] #### NSOLT合成処理関数（レベルごとの畳み込みを再帰的に適用する階層的方式）
+function y = synthesisnsolt(x,config)
+nLevels = config.nLevels;
+nChsPerLv = config.nChsPerLv;
+decFactor = config.decFactor;
+padSz = config.padSz;
+szOrg = config.szOrg;
+nAc = nChsPerLv - 1;
+sidx = 1;
+acParts = cell(1,nLevels);
+for iLv = 1:nLevels
+    szSub = szOrg./(decFactor.^iLv);
+    n = prod(szSub)*nAc;
+    acParts{iLv} = reshape(x(sidx:sidx+n-1),[szSub nAc]);
+    sidx = sidx+n;
+end
+szDc = szOrg./(decFactor.^nLevels);
+dc = reshape(x(sidx:sidx+prod(szDc)-1),szDc);
+for iLv = nLevels:-1:1
+    szSub = szOrg./(decFactor.^iLv);
+    combined = cat(3,dc,acParts{iLv}); % [DC, AC_1..AC_nAc] の順で要素画像の並びと一致させる
+    dc = synthesisnsolt_conv(combined(:),config.W{iLv},decFactor,padSz,[szSub nChsPerLv]);
+end
+y = dc;
 end
 
-%[text] #### NSOLT分析処理関数
-function x = analysisnsolt(y,analysisnet,config)
+%[text] #### NSOLT分析処理関数（レベルごとの畳み込みを再帰的に適用する階層的方式）
+function x = analysisnsolt(y,config)
 nLevels = config.nLevels;
-szCoefs = config.szCoefs;
-dly = dlarray(y,'SSCB');
-[s{1:nLevels+1}] = analysisnet.predict(dly);
-nCoefs = sum(prod(szCoefs,2),1);
-%x = [];
-x = zeros(nCoefs,1);
-sidx = 1;
-for iLevel = 1:nLevels+1
-    %x = [x; s{iLevel}(:)];
-    eidx = sidx - 1 + prod(szCoefs(iLevel,:));
-    x(sidx:eidx) = extractdata(s{iLevel}(:));
-    sidx = eidx + 1;
+nChsPerLv = config.nChsPerLv;
+decFactor = config.decFactor;
+padSz = config.padSz;
+dc = y;
+acParts = cell(1,nLevels);
+for iLv = 1:nLevels
+    combined = analysisnsolt_conv(dc,config.W{iLv},decFactor,padSz);
+    szSub = size(dc)./decFactor;
+    combined = reshape(combined,[szSub nChsPerLv]);
+    dc = combined(:,:,1);
+    acParts{iLv} = combined(:,:,2:end);
 end
+parts = cell(1,nLevels+1);
+for iLv = 1:nLevels
+    parts{iLv} = acParts{iLv}(:);
+end
+parts{nLevels+1} = dc(:);
+x = cat(1,parts{:});
 end
 %[text] #### ハード閾値処理
 function y = hardthresh(x,K)
