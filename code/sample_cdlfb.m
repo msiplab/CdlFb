@@ -683,13 +683,15 @@ for iDic = 1:nDics
     display(dicname)
     s = adjproc(y); % D^Ty
     xt = zeros(size(s),'like',s); % x1 = 0;
+    yaprx_ = zeros(size(y),'like',y); % synproc(x1)=0 に相当。次段のgt計算で
+    % 前反復のsynproc(xt)結果を再利用し、毎反復2回計算していたsynprocの呼出しを1回に減らす
     if isStepSizeNormalized % 正規化あり
         suppt = find(hardthresh(s,nCoefs)); % Γ1 = supp(H_K(D^Ty))
         maskt = (abs(s)~=0);
     end
     for iIter=1:nItersIht
         % Gradient descent
-        gt = adjproc(y-synproc(xt)); % g = D^T(y-Dxn)
+        gt = adjproc(y-yaprx_); % g = D^T(y-Dxn)
         if ~isStepSizeNormalized % 正規化なし
             mu = (1-c);
             xtp1 = hardthresh(xt+mu*gt,nCoefs);
@@ -726,7 +728,7 @@ for iDic = 1:nDics
         % Monitoring
         checkSparsity = nnz(xt)/prod(szOrg)<=sparsityRatio;
         assert(checkSparsity)
-        yaprx_ = synproc(xt);
+        yaprx_ = synproc(xt); % 次反復のgt計算でも再利用するのでキャッシュしておく
         psnr_ = psnr(cast(yaprx_,'like',y),y);
         ssim_ = ssim(cast(yaprx_,'like',y),y);
         psnrs(iIter,iDic) = psnr_;
