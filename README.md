@@ -17,6 +17,7 @@ Supplemental materials for article "Convolutional dictionary learning based on f
 
 ## Usage
 
-1. Open `code/sample_cdlfb.m` in MATLAB (R2024b or newer; R2025a or newer to view it as a Live Script) or click "Open in MATLAB Online" above.
+1. Open `code/sample_cdlfb.m` in MATLAB R2025a or newer (required to view/run it as a Live Script; tested on R2026a) or click "Open in MATLAB Online" above.
 2. Run the script. On first run, `setup(isCodegen)` automatically downloads the required version of the [SaivDr](https://github.com/msiplab/SaivDr) package and adds it to the MATLAB path; set `isCodegen` to `true` to also build the MEX files used for code generation.
 3. The script walks through dictionary learning with block DCT, PCA, RICA, K-SVD, and a convolutional NSOLT dictionary, and compares their sparse-approximation performance (PSNR/SSIM) via iterative hard thresholding (IHT).
+4. NSOLT dictionary design is cached: set `nsoltDic` to a name to save the trained dictionary as `data/<nsoltDic>.mat` and reload it on later runs instead of retraining; set `isForceDesign` to `true` to force retraining even if that file already exists. Leaving `nsoltDic` empty always retrains and saves a timestamped copy under `results/` instead.
