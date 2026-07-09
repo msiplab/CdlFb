@@ -13,9 +13,9 @@ close all
 
 nsoltDic = ""; % "nsoltdictionary_20230621232700260"
 
-isForceDesign = true; % 既存の設計データがあっても強制的に再学習するフラグ %[control:checkbox:df01]{"position":[17,21]}
+isForceDesign = false; % 既存の設計データがあっても強制的に再学習するフラグ %[control:checkbox:df01]{"position":[17,22]}
 
-isCodegen = true; % コード生成 %[control:checkbox:6a42]{"position":[13,17]}
+isCodegen = false; % コード生成 %[control:checkbox:6a42]{"position":[13,18]}
 setup(isCodegen) %[output:5beb9c5c]
 %%
 %[text] ### パラメータ設定
